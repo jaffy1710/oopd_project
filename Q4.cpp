@@ -1,90 +1,127 @@
 #include <iostream>
-#include <string>
-#include <cstdlib>
-#include <Windows.h>
+#include <vector>
+#include <windows.h>
+#include <dirent.h>
+#include <cstring>
+#include <chrono>
 
 using namespace std;
 
-class CopyCommand {
+class LsCommand {
 private:
-    string source;
-    string destination;
+    string path;
+    bool recursive;
 
 public:
-    CopyCommand(const string& src, const string& dest) : source(src), destination(dest) {}
+    LsCommand(string p, bool r) : path(p), recursive(r) {}
 
     void execute() {
-        copyFilesRecursive(source, destination);
+        auto start = chrono::steady_clock::now();  // Start measuring time
+
+        // Get the number of available cores
+        unsigned int numCores = 4;  
+
+        vector<HANDLE> threads;
+        vector<unsigned int> threadIds;
+        for (unsigned int i = 0; i < numCores; ++i) {
+            DWORD threadId;
+            HANDLE threadHandle = CreateThread(NULL, 0, &LsCommand::threadFunctionWrapper, this, 0, &threadId);
+            threads.push_back(threadHandle);
+            threadIds.push_back(threadId);
+        }
+
+        // Wait for all threads to finish
+        WaitForMultipleObjects(threads.size(), threads.data(), TRUE, INFINITE);
+
+        // Close thread handles
+        for (auto handle : threads) {
+            CloseHandle(handle);
+        }
+
+        auto end = chrono::steady_clock::now();  // Stop measuring time
+        auto elapsed = chrono::duration_cast<chrono::milliseconds>(end - start).count();
+
+        cout << "Total execution time: " << elapsed << " milliseconds" << endl;
     }
 
-    static DWORD WINAPI ThreadFunc(LPVOID param) {
-        CopyCommand* copyCommand = static_cast<CopyCommand*>(param);
-        copyCommand->execute();
+    
+
+private:
+    static DWORD WINAPI threadFunctionWrapper(LPVOID lpParam) {
+        LsCommand* lsCommand = static_cast<LsCommand*>(lpParam);
+        lsCommand->threadFunction();
         return 0;
     }
 
-private:
-    void copyFilesRecursive(const string& srcDir, const string& destDir) {
-        WIN32_FIND_DATA findFileData;
-        HANDLE hFind = FindFirstFile((srcDir + "\\*").c_str(), &findFileData);
+    void threadFunction() {
+        auto start = chrono::steady_clock::now();  
 
-        if (hFind == INVALID_HANDLE_VALUE) {
-            cerr << "Error finding source directory: " << srcDir << endl;
-            return;
+        unsigned int startIdx = 0;  
+        unsigned int stride = 1;    
+
+        DIR *dir;
+        struct dirent *entry;
+        string fullPath;
+
+        if ((dir = opendir(path.c_str())) != nullptr) {
+            unsigned int i = 0;
+            while ((entry = readdir(dir)) != nullptr) {
+                // Distribute work among threads
+                if (i % stride == startIdx) {
+                    fullPath = path + "/" + entry->d_name;
+
+                    if (entry->d_type == DT_DIR) {
+                        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                            listFilesRecursive(fullPath);
+                        }
+                    }
+                }
+
+                i++;
+            }
+            closedir(dir);
+        } else {
+            perror("ls");
         }
 
-        do {
-            if (findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                // Ignore '.' and '..' directories
-                if (strcmp(findFileData.cFileName, ".") != 0 && strcmp(findFileData.cFileName, "..") != 0) {
-                    string subSrcDir = srcDir + "\\" + findFileData.cFileName;
-                    string subDestDir = destDir + "\\" + findFileData.cFileName;
+        auto end = chrono::steady_clock::now();  // Stop measuring time
+        auto elapsed = chrono::duration_cast<chrono::milliseconds>(end - start).count();
 
-                    // Create a thread for each subdirectory
-                    HANDLE threadHandle = CreateThread(NULL, 0, CopyCommand::ThreadFunc, new CopyCommand(subSrcDir, subDestDir), 0, NULL);
-                    WaitForSingleObject(threadHandle, INFINITE);
-                    CloseHandle(threadHandle);
-                }
-            } else {
-                copyFile(srcDir + "\\" + findFileData.cFileName, destDir + "\\" + findFileData.cFileName);
-            }
-        } while (FindNextFile(hFind, &findFileData) != 0);
-
-        FindClose(hFind);
+        cout << "Thread execution time: " << elapsed << " milliseconds" << endl;
     }
 
-    void copyFile(const string& srcFile, const string& destFile) {
-        if (!CopyFile(srcFile.c_str(), destFile.c_str(), FALSE)) {
-            cerr << "Error copying file: " << srcFile << " to " << destFile << endl;
+    // ... (rest of the code remains unchanged)
+
+    void listFilesRecursive(const string &dirPath) {
+        // Perform the recursive listing
+        cout << dirPath << " (directory)" << endl;
+        // Additional code for recursive listing...
+
+        // Recursive call for each directory entry
+        DIR *dir;
+        struct dirent *entry;
+        if ((dir = opendir(dirPath.c_str())) != nullptr) {
+            while ((entry = readdir(dir)) != nullptr) {
+                string subPath = dirPath + "/" + entry->d_name;
+                if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                    listFilesRecursive(subPath);
+                }
+            }
+            closedir(dir);
         }
     }
 };
 
 int main() {
-    string source, destination;
+    auto start = chrono::steady_clock::now();  // Start measuring time
 
-    cout << "Enter source folder path: ";
-    getline(cin, source);
+    LsCommand ls("E:/oopd_project", true); // Set your directory path and recursion flag
+    ls.execute();
 
-    cout << "Enter destination folder path: ";
-    getline(cin, destination);
+    auto end = chrono::steady_clock::now();  // Stop measuring time
+    auto elapsed = chrono::duration_cast<chrono::milliseconds>(end - start).count();
 
-    // Get the number of cores available
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-    unsigned int numCores = sysinfo.dwNumberOfProcessors;
-
-    // Example usage of the multi-threaded 'cp' command
-    CopyCommand* copyCommand = new CopyCommand(source, destination);
-
-    // Create a thread for each core
-    for (unsigned int i = 0; i < numCores; ++i) {
-        HANDLE threadHandle = CreateThread(NULL, 0, CopyCommand::ThreadFunc, copyCommand, 0, NULL);
-        WaitForSingleObject(threadHandle, INFINITE);
-        CloseHandle(threadHandle);
-    }
-
-    delete copyCommand;
+    cout << "Total execution time: " << elapsed << " milliseconds" << endl;
 
     return 0;
 }
