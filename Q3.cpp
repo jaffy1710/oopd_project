@@ -1,56 +1,110 @@
 #include <iostream>
-#include <string>
+#include <vector>
 #include <windows.h>
-#include <chrono>
+#include <dirent.h>
+#include <cstring>
 
-class CopyCommand {
+using namespace std;
+
+class LsCommand {
+private:
+    string path;
+    bool recursive;
+
 public:
-    CopyCommand(const std::wstring& source, const std::wstring& destination)
-        : sourcePath(source), destinationPath(destination) {}
+    LsCommand(string p, bool r) : path(p), recursive(r) {}
 
     void execute() {
-        auto startTime = std::chrono::high_resolution_clock::now();
+        // Get the number of available cores
+        unsigned int numCores = 4;  // Replace with an appropriate value for your system
 
-        if (CopyFileW(sourcePath.c_str(), destinationPath.c_str(), FALSE)) {
-            std::wcout << L"Copy successful!" << std::endl;
-        } else {
-            std::wcerr << L"Error copying file. Error code: " << GetLastError() << std::endl;
+        // Create threads based on the number of cores
+        vector<HANDLE> threads;
+        vector<unsigned int> threadIds;
+        for (unsigned int i = 0; i < numCores; ++i) {
+            DWORD threadId;
+            HANDLE threadHandle = CreateThread(NULL, 0, &LsCommand::threadFunctionWrapper, this, 0, &threadId);
+            threads.push_back(threadHandle);
+            threadIds.push_back(threadId);
         }
 
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+        // Wait for all threads to finish
+        WaitForMultipleObjects(threads.size(), threads.data(), TRUE, INFINITE);
 
-        std::wcout << L"Copy completed in " << duration << L" milliseconds." << std::endl;
+        // Close thread handles
+        for (auto handle : threads) {
+            CloseHandle(handle);
+        }
     }
 
-    static DWORD WINAPI ThreadFunc(LPVOID param) {
-        CopyCommand* copyCommand = static_cast<CopyCommand*>(param);
-        copyCommand->execute();
-        return 0;
+    void showHelpMessage() const {
+        cout << "Usage: ls [options] list all files" << endl;
+        cout << "Options:" << endl;
+        cout << "  -h       Show help message" << endl;
+        cout << "  -r       Recursively show files and directories" << endl;
     }
 
 private:
-    std::wstring sourcePath;
-    std::wstring destinationPath;
+    static DWORD WINAPI threadFunctionWrapper(LPVOID lpParam) {
+        LsCommand* lsCommand = static_cast<LsCommand*>(lpParam);
+        lsCommand->threadFunction();
+        return 0;
+    }
+
+    void threadFunction() {
+        // Distribute work among threads
+        unsigned int startIdx = 0;  // You may need to adjust how work is distributed
+        unsigned int stride = 1;    // You may need to adjust how work is distributed
+
+        DIR *dir;
+        struct dirent *entry;
+        string fullPath;
+
+        if ((dir = opendir(path.c_str())) != nullptr) {
+            unsigned int i = 0;
+            while ((entry = readdir(dir)) != nullptr) {
+                // Distribute work among threads
+                if (i % stride == startIdx) {
+                    fullPath = path + "/" + entry->d_name;
+
+                    if (entry->d_type == DT_DIR) {
+                        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                            listFilesRecursive(fullPath);
+                        }
+                    }
+                }
+
+                i++;
+            }
+            closedir(dir);
+        } else {
+            perror("ls");
+        }
+    }
+
+    void listFilesRecursive(const string &dirPath) {
+        // Perform the recursive listing
+        cout << dirPath << " (directory)" << endl;
+        // Additional code for recursive listing...
+
+        // Recursive call for each directory entry
+        DIR *dir;
+        struct dirent *entry;
+        if ((dir = opendir(dirPath.c_str())) != nullptr) {
+            while ((entry = readdir(dir)) != nullptr) {
+                string subPath = dirPath + "/" + entry->d_name;
+                if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                    listFilesRecursive(subPath);
+                }
+            }
+            closedir(dir);
+        }
+    }
 };
 
 int main() {
-    std::wcout << L"Enter source path: ";
-    std::wstring sourcePath;
-    std::getline(std::wcin, sourcePath);
-
-    std::wcout << L"Enter destination path: ";
-    std::wstring destinationPath;
-    std::getline(std::wcin, destinationPath);
-
-    // Single-threaded copy
-    CopyCommand singleThreadedCopy(sourcePath, destinationPath);
-    singleThreadedCopy.execute();
-
-    // Multi-threaded copy
-    HANDLE threadHandle = CreateThread(NULL, 0, CopyCommand::ThreadFunc, &singleThreadedCopy, 0, NULL);
-    WaitForSingleObject(threadHandle, INFINITE);
-    CloseHandle(threadHandle);
+    LsCommand ls("E:/oopd_project", true); // Set your directory path and recursion flag
+    ls.execute();
 
     return 0;
 }
